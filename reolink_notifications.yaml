@@ -1,0 +1,461 @@
+blueprint:
+  name: Reolink clip to Telegram
+  author: Ryan
+  description: >
+    On detection, posts to one or more Telegram chats with a caption and an
+    optional "Live view" button. Three styles:
+
+    - **Clip**: records a short clip and posts it as a silent, auto-looping
+      animation. If the clip fails, a snapshot is sent instead.
+
+    - **Snapshot, then clip**: posts a snapshot immediately, then posts the clip as
+      a reply to it. Best for places where speed matters, like the front door.
+
+    - **Snapshot only**: the fastest option, with no recording.
+
+
+    Each camera has its own cooldown, based on a minimum time and, optionally,
+    on its sensors clearing.
+
+
+    **One-time setup** (configuration.yaml, then restart):
+
+    ```
+    shell_command:
+      reolink_clip_to_animation: >-
+        ffmpeg -y -loglevel error -i {{ src }} -an -vf {{ vf }}
+        -c:v libx264 -preset veryfast -crf 28 -pix_fmt yuv420p
+        -movflags +faststart {{ dst }}
+    ```
+
+    Then add the Telegram bot integration with your group chat as an allowed
+    chat. Working files go in `/media/camera_clips`, which HA creates
+    automatically and is allowed to write to by default (Docker installs).
+  domain: automation
+  homeassistant:
+    min_version: "2025.7.0"
+  input:
+    camera_settings:
+      name: Camera
+      icon: mdi:cctv
+      input:
+        camera_entity:
+          name: Camera
+          description: >
+            Camera entity to record. The `_fluent` (sub-stream) entity is
+            recommended: it is lower resolution and H.264, so recording and
+            conversion are fast and the clip is small.
+          selector:
+            entity:
+              filter:
+                - domain: camera
+        trigger_sensors:
+          name: Trigger sensors
+          description: >
+            Binary sensors that start a clip (for example _person, _vehicle,
+            _animal, _visitor, _motion). The cooldown waits for ALL of them to clear.
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: binary_sensor
+        camera_label:
+          name: Camera label (optional)
+          description: Name used in the caption. Leave blank to use the camera's friendly name.
+          default: ""
+          selector:
+            text:
+
+    style_settings:
+      name: Notification style
+      icon: mdi:message-image
+      input:
+        notify_style:
+          name: Style
+          description: >
+            Clip: one animated clip per event.
+            Snapshot, then clip: an instant still, with the clip following as a reply.
+            Snapshot only: an instant still, no recording.
+          default: clip
+          selector:
+            select:
+              options:
+                - label: Clip
+                  value: clip
+                - label: Snapshot, then clip (time-sensitive)
+                  value: snapshot_then_clip
+                - label: Snapshot only
+                  value: snapshot_only
+        snapshot_delay:
+          name: Snapshot delay
+          description: >
+            Seconds to wait before taking the first snapshot (snapshot styles
+            only). 0 is fastest; 1–2 s can give a better-framed image.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 5
+              step: 0.5
+              unit_of_measurement: s
+
+    telegram_settings:
+      name: Telegram
+      icon: mdi:send
+      input:
+        telegram_targets:
+          name: Telegram chats
+          description: >
+            Telegram notify entities. The Telegram bot integration creates one
+            per allowed chat. With exactly one chat, the clip is posted as a
+            reply to its snapshot.
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: notify
+                  integration: telegram_bot
+        ha_external_url:
+          name: Home Assistant external URL (for the Live view button)
+          description: >
+            HTTPS address you use to reach HA from outside the house, such as
+            https://xxxx.ui.nabu.casa or https://ha.example.com (no trailing slash).
+            Telegram only accepts https links for buttons. Leave blank to hide
+            the button.
+          default: ""
+          selector:
+            text:
+              type: url
+        live_view_path:
+          name: Live view page (recommended)
+          description: >
+            Dashboard view showing this camera in a picture-entity card with
+            camera_view set to live, for example /dashboard-cameras/front-door.
+            That card autoplays (muted). Leave blank to open the camera's pop-up
+            on your default dashboard instead; browsers won't autoplay it, so
+            you have to tap play.
+          default: ""
+          selector:
+            text:
+        silent:
+          name: Send silently
+          description: Post without a notification sound.
+          default: false
+          selector:
+            boolean:
+
+    clip_settings:
+      name: Clip
+      icon: mdi:filmstrip
+      input:
+        clip_duration:
+          name: Clip length
+          description: Seconds to record after the trigger.
+          default: 8
+          selector:
+            number:
+              min: 3
+              max: 30
+              step: 1
+              unit_of_measurement: s
+        lookback:
+          name: Lookback
+          description: >
+            Seconds of footage from BEFORE recording starts. Only works if "Preload
+            stream" is enabled in this camera entity's settings; otherwise leave it
+            at 0. Recommended for "Snapshot, then clip", where recording starts a
+            second or two late.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 10
+              step: 1
+              unit_of_measurement: s
+        storage_folder:
+          name: Working folder
+          description: >
+            Where the temporary clip and snapshot files are written (overwritten
+            on every event). HA creates the folder itself. It must be inside a
+            folder HA can write to by default (/media on Docker installs,
+            /config/media otherwise, or /config/www) or one listed under
+            allowlist_external_dirs. Avoid /config/www: anything in it is
+            reachable at /local/ without logging in.
+          default: /media/camera_clips
+          selector:
+            text:
+        clip_width:
+          name: Clip width
+          description: Output width in pixels. The height keeps the camera's aspect ratio.
+          default: 640
+          selector:
+            number:
+              min: 320
+              max: 1280
+              step: 80
+              unit_of_measurement: px
+        clip_fps:
+          name: Clip frame rate
+          default: 10
+          selector:
+            number:
+              min: 5
+              max: 20
+              step: 1
+              unit_of_measurement: fps
+        playback_speed:
+          name: Playback speed
+          description: Speed multiplier for the posted clip; 2 makes it quicker to skim the history.
+          default: "1"
+          selector:
+            select:
+              options:
+                - "1"
+                - "1.5"
+                - "2"
+
+    timing_settings:
+      name: Cooldown
+      icon: mdi:timer-outline
+      input:
+        cooldown:
+          name: Minimum cooldown
+          description: Minimum time after a post before this camera can post again.
+          default: 60
+          selector:
+            number:
+              min: 0
+              max: 3600
+              step: 10
+              unit_of_measurement: s
+        wait_for_clear:
+          name: Also wait for sensors to clear
+          default: true
+          selector:
+            boolean:
+        max_wait_for_clear:
+          name: Max wait for clear
+          description: Safety cap in case a sensor gets stuck on.
+          default: 600
+          selector:
+            number:
+              min: 30
+              max: 3600
+              step: 30
+              unit_of_measurement: s
+
+    extra_settings:
+      name: Pause and conditions
+      icon: mdi:pause-circle-outline
+      input:
+        pause_entities:
+          name: Pause toggles (optional)
+          description: If any of these is on, nothing is posted.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain:
+                    - input_boolean
+                    - binary_sensor
+                    - switch
+        additional_conditions:
+          name: Additional conditions (optional)
+          default: []
+          selector:
+            condition:
+
+mode: single            # one run per camera at a time; the run itself is the cooldown
+max_exceeded: silent    # triggers during recording/cooldown are dropped quietly
+
+triggers:
+  - trigger: state
+    entity_id: !input trigger_sensors
+    from: "off"
+    to: "on"
+
+conditions: !input additional_conditions
+
+variables:
+  # --- raw inputs -------------------------------------------------------------
+  camera_entity: !input camera_entity          # camera.* to snapshot/record
+  trigger_sensors: !input trigger_sensors      # binary_sensor.* list that starts an event
+  camera_label_input: !input camera_label      # caption name override ("" = friendly name)
+  notify_style: !input notify_style            # "clip" | "snapshot_then_clip" | "snapshot_only"
+  snapshot_delay: !input snapshot_delay        # seconds before the first snapshot (snapshot styles)
+  telegram_targets: !input telegram_targets    # notify.* entities from the Telegram bot integration
+  ha_external_url: !input ha_external_url      # e.g. https://xxxx.ui.nabu.casa ("" = no button)
+  live_view_path: !input live_view_path        # dashboard view with a live camera card ("" = pop-up)
+  silent: !input silent                        # bool: disable_notification on Telegram
+  clip_duration: !input clip_duration          # seconds recorded after recording starts
+  lookback: !input lookback                    # seconds recorded before recording starts (needs preload)
+  storage_folder: !input storage_folder      # folder for working files; HA creates it
+  clip_width: !input clip_width                # output width in px
+  clip_fps: !input clip_fps                    # output frame rate
+  playback_speed: !input playback_speed        # speed multiplier as a string ("1", "1.5", "2")
+  cooldown: !input cooldown                    # minimum seconds between posts
+  wait_for_clear: !input wait_for_clear        # bool: also wait for every trigger sensor to be off
+  max_wait_for_clear: !input max_wait_for_clear
+  pause_entities: !input pause_entities        # any "on" = skip
+
+  # --- derived values ---------------------------------------------------------
+  # want_snapshot / want_clip: which parts of the event this style posts
+  want_snapshot: "{{ notify_style in ['snapshot_then_clip', 'snapshot_only'] }}"
+  want_clip: "{{ notify_style in ['clip', 'snapshot_then_clip'] }}"
+  # cam_slug: object_id of the camera (e.g. "front_door_fluent"); used in file names
+  cam_slug: "{{ camera_entity.split('.')[1] }}"
+  camera_label: >-
+    {{ camera_label_input if camera_label_input | length > 0
+       else state_attr(camera_entity, 'friendly_name') | default(cam_slug, true) }}
+  # detection: human-readable event type, from the triggering entity_id suffix
+  detection: >-
+    {% set eid = trigger.entity_id | default('') %}
+    {% set kinds = [
+      ['visitor', 'Doorbell pressed'], ['person', 'Person'],
+      ['vehicle', 'Vehicle'], ['animal', 'Animal'], ['pet', 'Animal'],
+      ['package', 'Package'], ['face', 'Face'], ['motion', 'Motion'] ] %}
+    {% set ns = namespace(label='Motion') %}
+    {% for k in kinds | reverse %}{% if k[0] in eid %}{% set ns.label = k[1] %}{% endif %}{% endfor %}
+    {{ ns.label }}
+  # event_time: wall-clock time of the trigger, used in the caption
+  event_time: "{{ now().strftime('%a %-I:%M:%S %p') }}"
+  caption: "🎥 {{ camera_label }} — {{ detection }} · {{ event_time }}"
+  # file paths, overwritten on every event (history lives in Telegram, not on disk)
+  # folder: storage_folder without a trailing slash
+  folder: "{{ storage_folder | trim | regex_replace('/+$', '') }}"
+  raw_file: "{{ folder }}/{{ cam_slug }}_raw.mp4"   # straight from camera.record
+  anim_file: "{{ folder }}/{{ cam_slug }}.mp4"      # silent, scaled H.264 for Telegram
+  snap_file: "{{ folder }}/{{ cam_slug }}.jpg"      # snapshot / fallback still
+  # ffmpeg video filter chain:
+  #   setpts=PTS/speed  -> speeds up playback by playback_speed
+  #   scale=W:-2        -> width W px, height auto (kept even for H.264)
+  #   fps=N             -> resample to N frames per second
+  ffmpeg_vf: "setpts=PTS/{{ playback_speed }},scale={{ clip_width | int }}:-2,fps={{ clip_fps | int }}"
+  # live_url: where the Live view button goes
+  #   - live_view_path set   -> that dashboard view (live card autoplays muted)
+  #   - live_view_path blank -> default dashboard + ?more-info-entity-id=<camera>,
+  #                             which opens the camera pop-up (unmuted, so no autoplay)
+  live_url: >-
+    {%- set base = ha_external_url | trim | regex_replace('/+$', '') -%}
+    {%- set path = live_view_path | trim -%}
+    {%- if path -%}
+      {%- if not path.startswith('/') %}{% set path = '/' ~ path %}{% endif -%}
+      {{ base }}{{ path }}
+    {%- else -%}
+      {{ base }}/?more-info-entity-id={{ camera_entity }}
+    {%- endif -%}
+  # live_keyboard: Telegram inline button row "Label:https://..."; empty list = no button.
+  #                Telegram (and HA's parser) need https, and the URL must contain no commas.
+  live_keyboard: >-
+    {{ ['📹 Live view:' ~ live_url] if ha_external_url | trim | lower is match('https://') and ',' not in live_url else [] }}
+
+actions:
+  # 1. Respect pause toggles
+  - condition: template
+    value_template: "{{ pause_entities | select('is_state', 'on') | list | count == 0 }}"
+
+  # 2. Snapshot styles: post a still right away
+  - if:
+      - condition: template
+        value_template: "{{ want_snapshot }}"
+    then:
+      - delay:
+          seconds: "{{ snapshot_delay | float(0) }}"
+      - action: camera.snapshot
+        target:
+          entity_id: "{{ camera_entity }}"
+        data:
+          filename: "{{ snap_file }}"
+      - action: telegram_bot.send_photo
+        continue_on_error: true
+        data:
+          entity_id: "{{ telegram_targets }}"
+          file: "{{ snap_file }}"
+          caption: "{{ caption }}"
+          disable_notification: "{{ silent }}"
+          inline_keyboard: "{{ live_keyboard }}"
+        response_variable: snap_resp   # {chats: [{chat_id, message_id}, ...]}
+
+  # 3. Clip styles: record, convert, post
+  - if:
+      - condition: template
+        value_template: "{{ want_clip }}"
+    then:
+      # camera.record returns only after the recording is fully written
+      - action: camera.record
+        continue_on_error: true
+        target:
+          entity_id: "{{ camera_entity }}"
+        data:
+          filename: "{{ raw_file }}"
+          duration: "{{ clip_duration | int }}"
+          lookback: "{{ lookback | int }}"
+      - action: shell_command.reolink_clip_to_animation
+        continue_on_error: true
+        data:
+          src: "{{ raw_file }}"
+          dst: "{{ anim_file }}"
+          vf: "{{ ffmpeg_vf }}"
+        response_variable: ffmpeg_result   # {stdout, stderr, returncode}
+      - variables:
+          # clip_ok: the converted clip exists and ffmpeg succeeded
+          clip_ok: "{{ ffmpeg_result is defined and ffmpeg_result.returncode | default(1) == 0 }}"
+          # reply_to_id: snapshot message to thread the clip under; only valid when
+          #              there is exactly one chat, since message ids are per chat
+          reply_to_id: >-
+            {{ snap_resp.chats[0].message_id
+               if snap_resp is defined and snap_resp.chats is defined
+                  and snap_resp.chats | count == 1 and telegram_targets | count == 1
+               else 0 }}
+      - choose:
+          # 3a. Clip ready, posted as a reply to the snapshot
+          - conditions: "{{ clip_ok and reply_to_id | int > 0 }}"
+            sequence:
+              - action: telegram_bot.send_animation
+                data:
+                  entity_id: "{{ telegram_targets }}"
+                  file: "{{ anim_file }}"
+                  caption: "🎞 {{ camera_label }} — clip"
+                  disable_notification: true   # the snapshot already alerted everyone
+                  reply_to_message_id: "{{ reply_to_id | int }}"
+                  inline_keyboard: "{{ live_keyboard }}"
+          # 3b. Clip ready, posted on its own
+          - conditions: "{{ clip_ok }}"
+            sequence:
+              - action: telegram_bot.send_animation
+                data:
+                  entity_id: "{{ telegram_targets }}"
+                  file: "{{ anim_file }}"
+                  caption: "{{ caption if not want_snapshot else '🎞 ' ~ camera_label ~ ' — clip' }}"
+                  disable_notification: "{{ silent or want_snapshot }}"
+                  inline_keyboard: "{{ live_keyboard }}"
+          # 3c. Clip failed and no snapshot was sent yet: fall back to a still
+          - conditions: "{{ not want_snapshot }}"
+            sequence:
+              - action: camera.snapshot
+                continue_on_error: true
+                target:
+                  entity_id: "{{ camera_entity }}"
+                data:
+                  filename: "{{ snap_file }}"
+              - action: telegram_bot.send_photo
+                data:
+                  entity_id: "{{ telegram_targets }}"
+                  file: "{{ snap_file }}"
+                  caption: "{{ caption }} (clip unavailable)"
+                  disable_notification: "{{ silent }}"
+                  inline_keyboard: "{{ live_keyboard }}"
+        # clip failed after a snapshot was already sent: nothing more to post
+
+  # 4. Cooldown: minimum time, then (optionally) until every trigger sensor is clear
+  - delay:
+      seconds: "{{ cooldown | int }}"
+  - if:
+      - condition: template
+        value_template: "{{ wait_for_clear }}"
+    then:
+      - wait_template: "{{ trigger_sensors | select('is_state', 'on') | list | count == 0 }}"
+        timeout:
+          seconds: "{{ max_wait_for_clear | int }}"
+        continue_on_timeout: true
