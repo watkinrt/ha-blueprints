@@ -161,11 +161,20 @@ blueprint:
         lookback:
           name: Lookback
           description: >
-            Seconds of footage from BEFORE recording starts. Only works if "Preload
-            stream" is enabled in this camera entity's settings; otherwise leave it
-            at 0. Recommended for "Snapshot, then clip", where recording starts a
-            second or two late.
-          default: 0
+            Seconds of footage from BEFORE recording starts — the one setting that
+            can cover the camera's own detection lag, so the clip opens on whatever
+            triggered it instead of on the aftermath.
+
+
+            Requires "Preload stream" in this camera entity's settings. Without it
+            HA keeps no buffer to look back into and this silently does nothing, so
+            turn that on first.
+
+
+            It is served from the HLS segment buffer, which holds 5 segments of
+            roughly 2 s and never hands back the newest, so about 8 s is the
+            ceiling however high this is set; 4–6 is the useful range.
+          default: 4
           selector:
             number:
               min: 0
@@ -355,42 +364,64 @@ actions:
   - condition: template
     value_template: "{{ pause_entities | select('is_state', 'on') | list | count == 0 }}"
 
-  # 2. Snapshot styles: post a still right away
-  - if:
-      - condition: template
-        value_template: "{{ want_snapshot }}"
-    then:
-      - delay:
-          seconds: "{{ snapshot_delay | float(0) }}"
-      - action: camera.snapshot
-        target:
-          entity_id: "{{ camera_entity }}"
-        data:
-          filename: "{{ snap_file }}"
-      - action: telegram_bot.send_photo
-        continue_on_error: true
-        data:
-          entity_id: "{{ telegram_targets }}"
-          file: "{{ snap_file }}"
-          caption: "{{ caption }}"
-          disable_notification: "{{ silent }}"
-          inline_keyboard: "{{ live_keyboard }}"
-        response_variable: snap_resp   # {chats: [{chat_id, message_id}, ...]}
+  # 2. Snapshot and recording start side by side.
+  #    telegram_bot.send_photo blocks until the upload to Telegram finishes, and
+  #    while that sat in front of camera.record the whole upload landed in the gap
+  #    between the detection and the clip's first frame. Running the two branches
+  #    in parallel puts camera.record at the very top of the run instead; the
+  #    block still ends when both are done, so nothing downstream changes.
+  #
+  #    This relies on a response_variable assigned inside a parallel branch being
+  #    visible after the block: script variable assignment walks up to the parent
+  #    scope, and only `wait` and `repeat` are branch-local. So snap_resp below is
+  #    still the snapshot's message id and the clip can reply to it.
+  - parallel:
+      # 2a. Post a still right away (snapshot styles)
+      - sequence:
+          - if:
+              - condition: template
+                value_template: "{{ want_snapshot }}"
+            then:
+              - delay:
+                  seconds: "{{ snapshot_delay | float(0) }}"
+              # a failed snapshot must not discard a clip that the other branch
+              # is already recording
+              - action: camera.snapshot
+                continue_on_error: true
+                target:
+                  entity_id: "{{ camera_entity }}"
+                data:
+                  filename: "{{ snap_file }}"
+              - action: telegram_bot.send_photo
+                continue_on_error: true
+                data:
+                  entity_id: "{{ telegram_targets }}"
+                  file: "{{ snap_file }}"
+                  caption: "{{ caption }}"
+                  disable_notification: "{{ silent }}"
+                  inline_keyboard: "{{ live_keyboard }}"
+                response_variable: snap_resp   # {chats: [{chat_id, message_id}, ...]}
+      # 2b. Record (clip styles)
+      - sequence:
+          - if:
+              - condition: template
+                value_template: "{{ want_clip }}"
+            then:
+              # camera.record returns only after the recording is fully written
+              - action: camera.record
+                continue_on_error: true
+                target:
+                  entity_id: "{{ camera_entity }}"
+                data:
+                  filename: "{{ raw_file }}"
+                  duration: "{{ clip_duration | int }}"
+                  lookback: "{{ lookback | int }}"
 
-  # 3. Clip styles: record, convert, post
+  # 3. Clip styles: convert and post what was recorded
   - if:
       - condition: template
         value_template: "{{ want_clip }}"
     then:
-      # camera.record returns only after the recording is fully written
-      - action: camera.record
-        continue_on_error: true
-        target:
-          entity_id: "{{ camera_entity }}"
-        data:
-          filename: "{{ raw_file }}"
-          duration: "{{ clip_duration | int }}"
-          lookback: "{{ lookback | int }}"
       - action: shell_command.reolink_clip_to_animation
         continue_on_error: true
         data:

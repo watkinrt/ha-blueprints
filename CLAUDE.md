@@ -71,7 +71,18 @@ release. The repo is published at `github.com/watkinrt/ha-blueprints`.
   usable for `reply_to_message_id` when there is exactly one target chat, since
   message ids are per-chat.
 - **`lookback:`** on `camera.record` silently does nothing unless "Preload
-  stream" is enabled on the camera entity.
+  stream" is enabled on the camera entity — `Stream.async_record` reads it from
+  the HLS output, which only exists while something keeps the stream alive. It
+  is also quantised and capped: `min(int(lookback / ~2s) + 1, MAX_SEGMENTS=5)`
+  segments, minus the newest, so ~8 s is the ceiling whatever the input says.
+- **`telegram_bot.*` sends block until the upload completes.** Anything latency
+  sensitive must not sit behind one — hence the `parallel:` block holding the
+  snapshot branch and `camera.record` in step 2.
+- **A `response_variable` set inside a `parallel:` branch IS visible after the
+  block**, contrary to the usual advice. `ScriptRunVariables._assign` recurses
+  into the parent scope; only `assign_parallel_protected` (`wait`) and
+  `define_local` (`repeat`) are branch-local. This is what lets the clip still
+  reply to the snapshot's `message_id`.
 - **Working folder** must be writable by HA by default (`/media` on Docker,
   `/config/media` otherwise) or listed in `allowlist_external_dirs`;
   `/config/www` is served unauthenticated at `/local/` and is deliberately

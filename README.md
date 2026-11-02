@@ -59,10 +59,9 @@ resolution and H.264, so recording and conversion are fast and the resulting
 clip is small. The main stream works but is slower and much larger for no real
 benefit in a chat window.
 
-If you want **Lookback** (footage from *before* the trigger), enable
-*Preload stream* in that camera entity's settings — without it, lookback
-silently does nothing. It's worth it for **Snapshot, then clip**, where
-recording starts a second or two after the event.
+**Turn on *Preload stream*** in that camera entity's settings. It is what makes
+**Lookback** work, and without it every recording also pays an RTSP connect
+before its first frame. See [How late the clip starts](#how-late-the-clip-starts).
 
 ### Trigger sensors
 
@@ -87,6 +86,41 @@ arriving mid-run are dropped silently. The run itself is the cooldown:
 
 So a car sitting in the driveway with `_vehicle` held on produces one message,
 not one a minute.
+
+### How late the clip starts
+
+A clip can only begin once something is recording, and several things sit
+between the motion and that moment:
+
+| Where the time goes | Roughly | What to do |
+| --- | --- | --- |
+| Reolink deciding it saw something | 0.5–1.5 s | nothing — it's in the camera |
+| **Snapshot delay** | as configured | 0 is fastest |
+| `camera.snapshot` | 0.3–1 s | — |
+| Uploading that snapshot to Telegram | 1–3 s | **already fixed** — see below |
+| `camera.record` opening the RTSP stream | 1–3 s | enable *Preload stream* |
+
+The snapshot upload used to be the worst of these. `telegram_bot.send_photo`
+blocks until Telegram has the file, and it ran *before* `camera.record` — so on
+**Snapshot, then clip** the entire upload landed in the gap between the motion
+and the clip's first frame. The two now run in parallel, which puts
+`camera.record` at the top of the run. The clip still arrives at the same time;
+it just starts earlier in the action.
+
+That leaves the camera's own detection lag and the stream connect, and the only
+thing that recovers footage from *before* HA knew anything happened is
+**Lookback** (default 4 s):
+
+1. Enable **Preload stream** on the camera entity. Without it HA keeps no
+   buffer, and lookback silently does nothing.
+2. Set **Lookback** to 4–6 s.
+
+Lookback is served from the HLS segment buffer — 5 segments of about 2 s, and
+the newest is never handed back — so **roughly 8 s is the hard ceiling** no
+matter what you set. Anything above 6 is wasted.
+
+Existing automations keep whatever lookback they were created with, so open
+yours and set it; changing the blueprint default only affects new ones.
 
 ### Live view button
 
